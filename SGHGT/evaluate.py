@@ -35,12 +35,6 @@ def validate_ten_crop_detailed(model, dataset, device, desc="Validation"):
     plcc = pearsonr(ground_truth, predictions)[0] if len(ground_truth) >= 2 else 0.0
     return srcc, plcc, predictions, ground_truth, image_paths
 
-def calculate_confidence_interval(data, confidence=0.95):
-    n = len(data)
-    if n < 2: return np.mean(data), 0, 0
-    mean, std_err = np.mean(data), np.std(data, ddof=1) / np.sqrt(n)
-    h = std_err * t.ppf((1 + confidence) / 2, n - 1)
-    return mean, mean - h, mean + h
 
 def plot_scatter(preds, gts, dataset_name, fold_idx, output_dir):
     plt.figure(figsize=(8, 6))
