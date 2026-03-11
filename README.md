@@ -1,2 +1,20 @@
-# SGHGT
-DeepGaze IIE:Linardos A, Kümmerer M, Press O, et al. DeepGaze IIE: Calibrated prediction in and out-of-domain for state-of-the-art saliency modeling[C]//Proceedings of the ieee/cvf international conference on computer vision. 2021: 12919-12928.
+# SGHGT: A Saliency-Guided Hierarchical Gated Transformer for No-Reference Image Quality Assessment
+This is the official implementation of the paper: **"SGHGT: A Saliency-Guided Hierarchical Gated Transformer for No-Reference Image Quality Assessment"**.
+--
+##Introduction
+This repository provides the core code for **SGHGT**, a novel No-Reference Image Quality Assessment (NR-IQA) framework. The model improves assessment accuracy through several key innovations:
+* **Saliency-Guided Encoding**: Leverages saliency maps to guide the model to focus on regions sensitive to the Human Visual System (HVS).
+* **Hierarchical Attention Pooling (HAP)**: Replaces traditional global average pooling to achieve efficient multi-scale feature aggregation.
+* **Gated Transformer Architecture**: Effectively fuses semantic and texture features using a gating mechanism to improve feature representation robustness.
+---
+##Project Structure
+```text
+SGHGT-IQA/
+├── models/
+│   └── sghgt.py        # Core architecture of the SGHGT model
+├── config.py           # Configuration for paths and hyperparameters
+├── dataset.py          # Data parsing and loading for TID, KADID, CLIVE, etc.
+├── train.py            # Main training script
+├── evaluate.py         # Evaluation script (SROCC/PLCC, scatter plots)
+├── requirements.txt    # List of dependencies
+└── README.md           # Project documentation
