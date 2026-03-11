@@ -1,75 +1,129 @@
 import os
 import torch
+import torch.optim as optim
 import random
 import numpy as np
-import pandas as pd
-import torch.optim as optim
+import sys
 from torch.utils.data import DataLoader
-from sqt_hgr import SQT_HGR_Model, TotalLoss
-from evaluate import validate_ten_crop_detailed, calculate_confidence_interval, plot_scatter
+from tqdm import tqdm
+
+# Import components from other files
+from model import SQT_HGR_Model, TotalLoss
 from dataset import DatasetConfig, DatasetParser, DataSplitter, get_dataset_class
+from evaluate import validate_ten_crop_detailed, plot_scatter, analyze_experiment_results
+
+# DeepGaze Wrapper (Assume library exists in deepgaze_pytorch path)
+# Note: You may need to ensure the local path is in sys.path
+sys.path.append('./deepgaze_pytorch')
 
 def set_seed(seed=42):
+    """Fix seeds for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-def run_experiment(dataset_name, n_repeats=5, manual_seeds=[180, 120, 140, 160, 100]):
-    config = DatasetConfig.get_config(dataset_name)
-    parser = getattr(DatasetParser, config['parser'])
-    paths, scores, extra_info = parser(config)
+def cache_saliency(paths, out_dir, device, base_size=512):
+    """
+    Pre-computes saliency maps using a DeepGaze-like model 
+    and saves them as .pt files to speed up training.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    cache_map = {}
     
-    # 这里省略了 cache_saliency 调用，建议保留原文件中的定义
-    sal_cache = {} # 应调用 cache_saliency 获取
+    # Placeholder for actual DeepGaze loading
+    # from deepgaze_pytorch import DeepGazeIIE
+    # model = DeepGazeIIE().to(device).eval()
+    
+    print("Generating/Checking Saliency Map Cache...")
+    for p in tqdm(paths):
+        fname = os.path.basename(p) + ".pt"
+        save_path = os.path.join(out_dir, fname)
+        if not os.path.exists(save_path):
+            # In actual use, generate the map here:
+            # img = Image.open(p).convert('RGB').resize((base_size, base_size))
+            # sal = model(img) # Example call
+            dummy_sal = torch.zeros(1, base_size, base_size)
+            torch.save(dummy_sal, save_path)
+        cache_map[p] = save_path
+    return cache_map
 
-    all_srcc, all_plcc = [], []
-    training_seed = 142
+def train_single_experiment(dataset_name, split_seed, fold_idx, paths, scores, extra_info, sal_cache):
+    """Runs one full train/val/test cycle for a specific seed."""
+    config = DatasetConfig.get_config(dataset_name)
+    exp_dir = os.path.join(config['OUTPUT_DIR'], f'fold_{fold_idx+1}')
+    os.makedirs(exp_dir, exist_ok=True)
 
-    for i in range(n_repeats):
-        set_seed(training_seed)
-        split_seed = manual_seeds[i]
+    # Split data
+    t_p, t_s, v_p, v_s, ts_p, ts_s = DataSplitter.split_data(config, paths, scores, extra_info, random_seed=split_seed)
+
+    # Initialize loaders
+    DS = get_dataset_class(dataset_name)
+    train_loader = DataLoader(DS(t_p, t_s, sal_cache, is_train=True, **config), 
+                              batch_size=config['BATCH_SIZE'], shuffle=True, num_workers=0)
+    val_ds = DS(v_p, v_s, sal_cache, is_train=False, **config)
+    test_ds = DS(ts_p, ts_s, sal_cache, is_train=False, **config)
+
+    # Model, Optimizer, Loss
+    model = SQT_HGR_Model(dropout_rate=config['DROPOUT_RATE']).to(config['DEVICE'])
+    optimizer = optim.AdamW([
+        {'params': model.backbone.parameters(), 'lr': config['LR_BACKBONE']},
+        {'params': [p for n, p in model.named_parameters() if 'backbone' not in n], 'lr': config['LR_HEAD']}
+    ], weight_decay=config['WEIGHT_DECAY'])
+    
+    criterion = TotalLoss(lambda_mse=config['LAMBDA_MSE'], lambda_rank=config['LAMBDA_RANK'])
+    
+    best_srcc = -1.0
+    for epoch in range(config['N_EPOCHS']):
+        model.train()
+        train_loss = 0
+        for img, sal, gt in tqdm(train_loader, desc=f"Fold {fold_idx+1} | Epoch {epoch+1}"):
+            img, sal, gt = img.to(config['DEVICE']), sal.to(config['DEVICE']), gt.to(config['DEVICE'])
+            optimizer.zero_grad()
+            preds = model(img, sal)
+            loss = criterion(preds, gt)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
         
-        # 数据划分与 Loader
-        tr_p, tr_s, val_p, val_s, te_p, te_s = DataSplitter.split_data(config, paths, scores, extra_info, split_seed)
-        ds_cls = get_dataset_class(dataset_name)
-        train_loader = DataLoader(ds_cls(tr_p, tr_s, sal_cache, is_train=True, **config), batch_size=config['BATCH_SIZE'], shuffle=True)
-        val_ds = ds_cls(val_p, val_s, sal_cache, is_train=False, **config)
-        test_ds = ds_cls(te_p, te_s, sal_cache, is_train=False, **config)
-
-        model = SQT_HGR_Model(dropout_rate=config['DROPOUT_RATE']).to(config['DEVICE'])
-        optimizer = optim.AdamW([
-            {'params': model.backbone.parameters(), 'lr': config['LR_BACKBONE']},
-            {'params': [p for n, p in model.named_parameters() if 'backbone' not in n], 'lr': config['LR_HEAD']}
-        ], weight_decay=config['WEIGHT_DECAY'])
+        # Validation
+        v_srcc, v_plcc, _, _, _ = validate_ten_crop_detailed(model, val_ds, config['DEVICE'])
+        print(f"Epoch {epoch+1} Val SRCC: {v_srcc:.4f} | PLCC: {v_plcc:.4f}")
         
-        criterion = TotalLoss(config['LAMBDA_MSE'], config['LAMBDA_RANK'])
-        best_srcc = -1
+        if v_srcc > best_srcc:
+            best_srcc = v_srcc
+            torch.save(model.state_dict(), os.path.join(exp_dir, 'best_model.pth'))
 
-        for ep in range(config['N_EPOCHS']):
-            model.train()
-            for img, sal, sc in train_loader:
-                img, sal, sc = img.to(config['DEVICE']), sal.to(config['DEVICE']), sc.to(config['DEVICE'])
-                optimizer.zero_grad()
-                loss = criterion(model(img, sal), sc)
-                loss.backward()
-                optimizer.step()
-            
-            val_srcc, _, _, _, _ = validate_ten_crop_detailed(model, val_ds, config['DEVICE'])
-            if val_srcc > best_srcc:
-                best_srcc = val_srcc
-                torch.save(model.state_dict(), 'best.pth')
-
-        # 测试阶段
-        model.load_state_dict(torch.load('best.pth'))
-        srcc, plcc, preds, gts, _ = validate_ten_crop_detailed(model, test_ds, config['DEVICE'])
-        all_srcc.append(srcc); all_plcc.append(plcc)
-        plot_scatter(preds, gts, dataset_name, i, config['OUTPUT_DIR'])
-
-    # 打印最终统计
-    m_s, l_s, u_s = calculate_confidence_interval(all_srcc)
-    print(f"Final SRCC: {m_s:.4f} ± {u_s-m_s:.4f}")
+    # Final Evaluation on Test Set
+    model.load_state_dict(torch.load(os.path.join(exp_dir, 'best_model.pth')))
+    t_srcc, t_plcc, preds, gts, _ = validate_ten_crop_detailed(model, test_ds, config['DEVICE'], desc="Test")
+    plot_scatter(preds, gts, dataset_name, fold_idx, exp_dir)
+    return t_srcc, t_plcc
 
 if __name__ == "__main__":
-    run_experiment('CLIVE')
+    # Settings
+    dataset_to_run = 'CLIVE'
+    n_repeats = 5
+    seeds = [180, 120, 140, 160, 100] # Split seeds for the 5 folds
+
+    # Prepare Data
+    config = DatasetConfig.get_config(dataset_to_run)
+    os.makedirs(config['OUTPUT_DIR'], exist_ok=True)
+    parser = getattr(DatasetParser, config['parser'])
+    all_paths, all_scores, extra = parser(config)
+
+    # Pre-cache saliency
+    sal_cache = cache_saliency(all_paths, os.path.join(config['OUTPUT_DIR'], 'sal_cache'), config['DEVICE'])
+
+    # Run Experiments
+    total_srcc, total_plcc = [], []
+    for i in range(n_repeats):
+        print(f"\n{'='*20} Starting Fold {i+1}/{n_repeats} {'='*20}")
+        set_seed(42) # Re-fix training seed for consistency
+        s, p = train_single_experiment(dataset_to_run, seeds[i], i, all_paths, all_scores, extra, sal_cache)
+        total_srcc.append(s); total_plcc.append(p)
+
+    # Results Analysis
+    analyze_experiment_results(dataset_to_run, total_srcc, total_plcc, config['OUTPUT_DIR'])
