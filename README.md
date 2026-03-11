@@ -29,6 +29,10 @@ LIVEC: <https://live.ece.utexas.edu/research/ChallengeDB/index.html>
 KADID-10K: <https://database.mmsp-kn.de/kadid-10k-database.html>
 
 ---
+## Saliency map
+DeepgazeIIE: <https://github.com/matthias-k/DeepGaze>
+
+---
 
 ## Training
 ```text
