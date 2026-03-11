@@ -1,177 +1,287 @@
+import os
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.models as models
+from torch.utils.data import Dataset
+from PIL import Image
+import numpy as np
+import random
+import torchvision.transforms as transforms
+import torchvision.transforms.functional as T_F
+from sklearn.model_selection import train_test_split
 
-class AttentionPooling(nn.Module):
-    """
-    Self-Attention based pooling layer that computes weights for each spatial location.
-    """
-    def __init__(self, in_dim):
-        super(AttentionPooling, self).__init__()
-        self.attn = nn.Sequential(
-            nn.Conv2d(in_dim, 1, kernel_size=1),
-            nn.Sigmoid()
-        )
+class DatasetConfig:
+    """Unified configuration class for various IQA datasets."""
+    @staticmethod
+    def get_config(dataset_name):
+        # Default parameters for single-stage training
+        single_stage_params = {
+            'N_EPOCHS': 40,
+            'BATCH_SIZE': 16,
+            'IMG_SIZE': 224,
+            'LR_HEAD': 3e-4,
+            'LR_BACKBONE': 2e-5,
+            'BASE_SIZE': 512,
+            'LAMBDA_MSE': 1.0,
+            'LAMBDA_RANK': 1.0
+        }
 
-    def forward(self, x):
-        # Generate attention map
-        weights = self.attn(x)
-        # Weighted spatial averaging
-        x_pool = (x * weights).sum(dim=(2, 3)) / (weights.sum(dim=(2, 3)) + 1e-8)
-        return x_pool
+        configs = {
+            'CID2013': {
+                'BASE_DIR': r"C:\Users\Administrator\Desktop\IQA DATA\CID2013",
+                'MOS_FILE_PATH': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\CID2013", "source_id_iq_score_pairs.txt"),
+                'IS_DIRS': [os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\CID2013", f"IS{i}") for i in range(1, 7)],
+                'OUTPUT_DIR': "./cid2013_results",
+                'parser': 'parse_cid2013_v2',
+                'split_method': 'by_folder',
+                'model_type': 'HGR',
+                'training_stages': 'single'
+            },
+            'TID2013': {
+                'BASE_DIR': r"C:\Users\Administrator\Desktop\IQA DATA\tid2013",
+                'MOS_FILE_PATH': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\tid2013", "mos_with_names.txt"),
+                'DISTORTED_IMAGES_DIR': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\tid2013", "distorted_images"),
+                'OUTPUT_DIR': "./tid2013_results",
+                'parser': 'parse_tid2013',
+                'split_method': 'by_reference',
+                'model_type': 'HGR',
+                'training_stages': 'single'
+            },
+            'CLIVE': {
+                'BASE_DIR': r"C:\Users\Administrator\Desktop\IQA DATA\CLIVE",
+                'IMAGES_DIR': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\CLIVE", "Images"),
+                'MOS_FILE_PATH': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\CLIVE", "Data", "image_mos_mapping.txt"),
+                'OUTPUT_DIR': "./clive_results",
+                'parser': 'parse_clive',
+                'split_method': 'random',
+                'model_type': 'HGR',
+                'training_stages': 'single'
+            },
+            'KADID': {
+                'BASE_DIR': r"C:\Users\Administrator\Desktop\IQA DATA\kadid10k",
+                'MOS_FILE_PATH': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\kadid10k", "exported_data.txt"),
+                'IMAGES_DIR': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\kadid10k", "images"),
+                'OUTPUT_DIR': "./kadid10k_results",
+                'parser': 'parse_kadid',
+                'split_method': 'by_reference',
+                'model_type': 'HGR',
+                'training_stages': 'two_stage',
+                'N_EPOCHS': 40,
+                'LR_HEAD': 3e-4,
+                'LR_BACKBONE': 8e-6,
+                'BATCH_SIZE': 8,
+                'BASE_SIZE': 512,
+                'INPUT_SIZE': 384,
+                'IMG_SIZE': 384,
+                'LAMBDA_MSE': 1.0,
+                'LAMBDA_RANK': 1.0
+            },
+            'KONIQ': {
+                'BASE_DIR': r"C:\Users\Administrator\Desktop\IQA DATA\koniq",
+                'IMAGES_DIR': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\koniq", "koniq10k"),
+                'MOS_FILE_PATH': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\koniq", "image_mos_pairs.txt"),
+                'OUTPUT_DIR': "./koniq_results",
+                'parser': 'parse_koniq',
+                'split_method': 'random',
+                'model_type': 'HGR',
+                'training_stages': 'two_stage',
+                'N_EPOCHS': 50,
+                'LR_HEAD': 3e-4,
+                'LR_BACKBONE': 8e-6,
+                'BATCH_SIZE': 8,
+                'BASE_SIZE': 512,
+                'INPUT_SIZE': 384,
+                'IMG_SIZE': 384,
+                'LAMBDA_MSE': 1.0,
+                'LAMBDA_RANK': 1.0
+            }
+        }
 
-class SaliencyEncoder(nn.Module):
-    """
-    Encoder to extract features from saliency maps at different hierarchical levels.
-    """
-    def __init__(self):
-        super(SaliencyEncoder, self).__init__()
-        # Initial layers to process saliency map down to intermediate resolution
-        self.enc3 = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(256, 384, kernel_size=3, stride=1, padding=1), nn.ReLU()
-        )
-        # Further downsampling to deep semantic resolution
-        self.enc4 = nn.Sequential(
-            nn.Conv2d(384, 768, kernel_size=3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(768, 768, kernel_size=3, stride=1, padding=1), nn.ReLU()
-        )
+        common_params = {
+            'DEVICE': 'cuda' if torch.cuda.is_available() else 'cpu',
+            'WEIGHT_DECAY': 1e-4,
+            'DROPOUT_RATE': 0.3
+        }
 
-    def forward(self, x):
-        f3 = self.enc3(x)
-        f4 = self.enc4(f3)
-        return f3, f4
+        config = configs.get(dataset_name)
+        if config:
+            if config.get('training_stages') == 'single':
+                config.update(single_stage_params)
+            config.update(common_params)
+            return config
+        else:
+            raise ValueError(f"Unknown dataset: {dataset_name}")
 
-class SQT_HGR_Model(nn.Module):
-    """
-    SQT-HGR: Swin-Transformer based Hierarchical Gated Regression for Image Quality Assessment.
-    """
-    def __init__(self, dropout_rate=0.3):
-        super(SQT_HGR_Model, self).__init__()
-        # Load pre-trained Swin-Transformer Tiny
-        self.backbone = models.swin_t(weights=models.Swin_T_Weights.IMAGENET1K_V1)
-        self.features = self.backbone.features
-        self.sal_encoder = SaliencyEncoder()
+class BaseIQADataset(Dataset):
+    """General IQA dataset class handling images and pre-computed saliency maps."""
+    def __init__(self, paths, scores, sal_cache, is_train=True, img_size=224, base_size=512, input_size=None):
+        self.paths = paths
+        self.scores = torch.tensor(scores, dtype=torch.float32)
+        self.sal_cache = sal_cache
+        self.is_train = is_train
+        self.img_size = img_size
+        self.base_size = base_size
+        self.input_size = input_size if input_size is not None else img_size
 
-        # Texture Branch (Level 3 features)
-        self.tex_fusion = nn.Sequential(
-            nn.Conv2d(384 * 2, 384, kernel_size=1),
-            nn.BatchNorm2d(384),
-            nn.GELU()
-        )
-        self.tex_pool = AttentionPooling(384)
-        self.tex_head = nn.Sequential(
-            nn.Linear(384, 128),
-            nn.GELU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(128, 1)
-        )
+    def __len__(self):
+        return len(self.paths)
 
-        # Semantic Branch (Level 4 features)
-        self.sem_fusion = nn.Sequential(
-            nn.Conv2d(768 * 2, 768, kernel_size=1),
-            nn.BatchNorm2d(768),
-            nn.GELU()
-        )
-        self.sem_pool = AttentionPooling(768)
-        self.sem_head = nn.Sequential(
-            nn.Linear(768, 256),
-            nn.GELU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(256, 1)
-        )
+    def __getitem__(self, idx):
+        try:
+            # Load and resize image to base_size
+            img = Image.open(self.paths[idx]).convert('RGB').resize((self.base_size, self.base_size), Image.BILINEAR)
+            img_t = transforms.ToTensor()(img)
+            
+            # Load saliency map from cache
+            sal_path = self.sal_cache[self.paths[idx]]
+            sal = torch.load(sal_path)
+            if sal.ndim == 4: sal = sal.squeeze(0)
 
-        # Gating Controller to adaptively fuse Texture and Semantic scores
-        self.gate_net = nn.Sequential(
-            nn.Linear(384 + 768, 256),
-            nn.GELU(),
-            nn.Linear(256, 1),
-            nn.Sigmoid()
-        )
-        self.sal_pool3 = AttentionPooling(384)
-        self.sal_pool4 = AttentionPooling(768)
+            crop_size = self.input_size
+            if self.is_train:
+                # Random cropping and flipping for training
+                i, j, h, w = transforms.RandomCrop.get_params(img_t, (crop_size, crop_size))
+                img_out = T_F.crop(img_t, i, j, h, w)
+                sal_out = T_F.crop(sal, i, j, h, w)
+                if random.random() > 0.5:
+                    img_out = T_F.hflip(img_out)
+                    sal_out = T_F.hflip(sal_out)
+            else:
+                # Center cropping for evaluation
+                img_out = T_F.center_crop(img_t, (crop_size, crop_size))
+                sal_out = T_F.center_crop(sal, (crop_size, crop_size))
 
-    def forward(self, x_img, x_sal):
-        x = x_img
-        f_img3, f_img4 = None, None
-        
-        # Extract hierarchical features from Swin-T
-        for i, layer in enumerate(self.features):
-            x = layer(x)
-            if i == 5: # Level 3 stage
-                if x.ndim == 3: # Handle [B, L, C] Swin output
-                    B, L, C = x.shape
-                    H = W = int(L ** 0.5)
-                    f_img3 = x.transpose(1, 2).reshape(B, C, H, W)
-                else:
-                    f_img3 = x.permute(0, 3, 1, 2)
-            if i == 7: # Level 4 stage
-                if x.ndim == 3:
-                    B, L, C = x.shape
-                    H = W = int(L ** 0.5)
-                    f_img4 = x.transpose(1, 2).reshape(B, C, H, W)
-                else:
-                    f_img4 = x.permute(0, 3, 1, 2)
-                break
+            # Image normalization
+            norm = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            return norm(img_out), sal_out, self.scores[idx]
+        except Exception as e:
+            # Return zero tensors on failure
+            return torch.zeros(3, self.input_size, self.input_size), torch.zeros(1, self.input_size, self.input_size), torch.tensor(0.0)
 
-        # Extract saliency features
-        f_sal3, f_sal4 = self.sal_encoder(x_sal)
+# Dataset Subclasses
+class CID2013Dataset(BaseIQADataset): pass
+class TID2013Dataset(BaseIQADataset): pass
+class CLIVEDataset(BaseIQADataset): pass
+class KADIDDataset(BaseIQADataset): pass
+class KONIQDataset(BaseIQADataset): pass
 
-        # Texture Score Regression
-        f_tex = self.tex_fusion(torch.cat([f_img3, f_sal3], dim=1))
-        s_tex = self.tex_head(self.tex_pool(f_tex))
+class DatasetParser:
+    """Helper to find files and parse MOS text files."""
+    @staticmethod
+    def find_all_image_files(base_dirs):
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
+        all_images = []
+        for base_dir in base_dirs:
+            if not os.path.exists(base_dir): continue
+            for root, _, files in os.walk(base_dir):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in image_extensions):
+                        all_images.append(os.path.join(root, file))
+        return all_images
 
-        # Semantic Score Regression
-        f_sem = self.sem_fusion(torch.cat([f_img4, f_sal4], dim=1))
-        s_sem = self.sem_head(self.sem_pool(f_sem))
+    @staticmethod
+    def parse_cid2013_v2(config):
+        mos_dict = {}
+        with open(config['MOS_FILE_PATH'], 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2: mos_dict[parts[0]] = float(parts[1])
+        all_image_paths = DatasetParser.find_all_image_files(config['IS_DIRS'])
+        paths, scores, folders = [], [], []
+        for p in all_image_paths:
+            fname = os.path.splitext(os.path.basename(p))[0]
+            if fname in mos_dict:
+                paths.append(p); scores.append(mos_dict[fname])
+                folders.append(os.path.basename(os.path.dirname(os.path.dirname(p))))
+        return paths, scores, folders
 
-        # Gating mechanism
-        g3 = self.sal_pool3(f_sal3)
-        g4 = self.sal_pool4(f_sal4)
-        alpha = self.gate_net(torch.cat([g3, g4], dim=1))
+    @staticmethod
+    def parse_tid2013(config):
+        paths, scores, refs = [], [], []
+        with open(config['MOS_FILE_PATH'], 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    score, img_name = float(parts[0]), parts[1]
+                    img_path = os.path.join(config['DISTORTED_IMAGES_DIR'], img_name)
+                    if os.path.exists(img_path):
+                        paths.append(img_path); scores.append(score)
+                        refs.append(img_name.split('_')[0])
+        return paths, scores, refs
 
-        # Final score as gated sum
-        final_score = alpha * s_tex + (1 - alpha) * s_sem
-        return final_score
+    @staticmethod
+    def parse_clive(config):
+        mos_dict = {}
+        with open(config['MOS_FILE_PATH'], 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split('\t')
+                if len(parts) >= 2: mos_dict[parts[0]] = float(parts[1])
+        image_files = DatasetParser.find_all_image_files([config['IMAGES_DIR']])
+        paths, scores = [], []
+        for p in image_files:
+            name = os.path.basename(p)
+            if name in mos_dict:
+                paths.append(p); scores.append(mos_dict[name])
+        return paths, scores, None
 
-class RankLoss(nn.Module):
-    """
-    Ranking loss to encourage the model to learn the relative order of image quality.
-    """
-    def forward(self, preds, targets):
-        preds = preds.view(-1)
-        targets = targets.view(-1)
-        
-        # Calculate pairwise differences
-        pred_diff = preds.unsqueeze(0) - preds.unsqueeze(1)
-        target_diff = targets.unsqueeze(0) - targets.unsqueeze(1)
-        
-        # Get ground truth relationship (-1, 0, or 1) converted to probability (0 to 1)
-        target_sign = (torch.sign(target_diff) + 1) / 2
-        
-        # Mask to ignore pairs with the same ground truth score
-        mask = (torch.abs(target_diff) > 0).float()
-        
-        # Binary Cross Entropy over pairwise differences
-        loss = F.binary_cross_entropy_with_logits(pred_diff, target_sign, reduction='none')
-        return (loss * mask).sum() / (mask.sum() + 1e-8)
+    @staticmethod
+    def parse_kadid(config):
+        paths, scores, refs = [], [], []
+        with open(config['MOS_FILE_PATH'], 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 3:
+                    img_path = os.path.join(config['IMAGES_DIR'], parts[0])
+                    if os.path.exists(img_path):
+                        paths.append(img_path); scores.append(float(parts[2])); refs.append(parts[1])
+        return paths, scores, refs
 
-class TotalLoss(nn.Module):
-    """
-    Combined loss function: MSE + Lambda * RankLoss
-    """
-    def __init__(self, lambda_mse=1.0, lambda_rank=1.0):
-        super(TotalLoss, self).__init__()
-        self.mse = nn.MSELoss()
-        self.rank = RankLoss()
-        self.lambda_mse = lambda_mse
-        self.lambda_rank = lambda_rank
+    @staticmethod
+    def parse_koniq(config):
+        paths, scores = [], []
+        with open(config['MOS_FILE_PATH'], 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    img_path = os.path.join(config['IMAGES_DIR'], parts[0])
+                    if os.path.exists(img_path):
+                        paths.append(img_path); scores.append(float(parts[1]))
+        return paths, scores, None
 
-    def forward(self, preds, targets):
-        loss_mse = self.mse(preds, targets.unsqueeze(1))
-        loss_rank = self.rank(preds, targets)
-        return self.lambda_mse * loss_mse + self.lambda_rank * loss_rank
+class DataSplitter:
+    """Splits data based on folder, reference image, or random indexing."""
+    @staticmethod
+    def split_data(config, paths, scores, extra_info=None, random_seed=42):
+        method = config.get('split_method', 'random')
+        if method == 'by_folder' and extra_info:
+            folders = list(set(extra_info))
+            folders.sort()
+            random.seed(random_seed)
+            random.shuffle(folders)
+            train_f, val_f, test_f = folders[:3], folders[3:4], folders[4:6]
+            t_p, t_s, v_p, v_s, ts_p, ts_s = [], [], [], [], [], []
+            for p, s, f in zip(paths, scores, extra_info):
+                if f in train_f: t_p.append(p); t_s.append(s)
+                elif f in val_f: v_p.append(p); v_s.append(s)
+                elif f in test_f: ts_p.append(p); ts_s.append(s)
+            return t_p, t_s, v_p, v_s, ts_p, ts_s
+        elif method == 'by_reference' and extra_info:
+            urefs = np.unique(extra_info)
+            tr_r, tmp_r = train_test_split(urefs, test_size=0.4, random_state=random_seed)
+            v_r, ts_r = train_test_split(tmp_r, test_size=0.5, random_state=random_seed)
+            t_p = [paths[i] for i, r in enumerate(extra_info) if r in tr_r]
+            t_s = [scores[i] for i, r in enumerate(extra_info) if r in tr_r]
+            v_p = [paths[i] for i, r in enumerate(extra_info) if r in v_r]
+            v_s = [scores[i] for i, r in enumerate(extra_info) if r in v_r]
+            ts_p = [paths[i] for i, r in enumerate(extra_info) if r in ts_r]
+            ts_s = [scores[i] for i, r in enumerate(extra_info) if r in ts_r]
+            return t_p, t_s, v_p, v_s, ts_p, ts_s
+        else:
+            idx = list(range(len(paths)))
+            tr_i, tmp_i = train_test_split(idx, test_size=0.4, random_state=random_seed)
+            v_i, ts_i = train_test_split(tmp_i, test_size=0.5, random_state=random_seed)
+            return [paths[i] for i in tr_i], [scores[i] for i in tr_i], \
+                   [paths[i] for i in v_i], [scores[i] for i in v_i], \
+                   [paths[i] for i in ts_i], [scores[i] for i in ts_i]
+
+def get_dataset_class(name):
+    cls_map = {'CID2013': CID2013Dataset, 'TID2013': TID2013Dataset, 'CLIVE': CLIVEDataset, 'KADID': KADIDDataset, 'KONIQ': KONIQDataset}
+    return cls_map.get(name, BaseIQADataset)
