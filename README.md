@@ -9,12 +9,30 @@ This repository provides the core code for **SGHGT**, a novel No-Reference Image
 ---
 ## Project Structure
 ```text
-SGHGT-IQA/
-├── models/
-│   └── sghgt.py        # Core architecture of the SGHGT model
+SGHGT/
+├── model.py            # Core architecture of the SGHGT model
 ├── config.py           # Configuration for paths and hyperparameters
 ├── dataset.py          # Data parsing and loading for TID, KADID, CLIVE, etc.
 ├── train.py            # Main training script
 ├── evaluate.py         # Evaluation script (SROCC/PLCC, scatter plots)
 ├── requirements.txt    # List of dependencies
 └── README.md           # Project documentation
+```
+
+## Dataset
+TID2013: <https://ponomarenko.info/tid2013.htm>
+CID2013: <https://zenodo.org/records/2647033>
+LIVEC: <https://live.ece.utexas.edu/research/ChallengeDB/index.html>
+KADID-10K: <https://database.mmsp-kn.de/kadid-10k-database.html>
+---
+
+## Training
+```text
+run train.py
+```
+
+## Evaluate
+```text
+run evaluate.py
+```
+
