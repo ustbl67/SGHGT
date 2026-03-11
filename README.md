@@ -1,13 +1,13 @@
 # SGHGT: A Saliency-Guided Hierarchical Gated Transformer for No-Reference Image Quality Assessment
 This is the official implementation of the paper: **"SGHGT: A Saliency-Guided Hierarchical Gated Transformer for No-Reference Image Quality Assessment"**.
 --
-##Introduction
+## Introduction
 This repository provides the core code for **SGHGT**, a novel No-Reference Image Quality Assessment (NR-IQA) framework. The model improves assessment accuracy through several key innovations:
 * **Saliency-Guided Encoding**: Leverages saliency maps to guide the model to focus on regions sensitive to the Human Visual System (HVS).
 * **Hierarchical Attention Pooling (HAP)**: Replaces traditional global average pooling to achieve efficient multi-scale feature aggregation.
 * **Gated Transformer Architecture**: Effectively fuses semantic and texture features using a gating mechanism to improve feature representation robustness.
 ---
-##Project Structure
+## Project Structure
 ```text
 SGHGT-IQA/
 ├── models/
