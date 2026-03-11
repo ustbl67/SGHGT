@@ -21,9 +21,13 @@ SGHGT/
 
 ## Dataset
 TID2013: <https://ponomarenko.info/tid2013.htm>
+
 CID2013: <https://zenodo.org/records/2647033>
+
 LIVEC: <https://live.ece.utexas.edu/research/ChallengeDB/index.html>
+
 KADID-10K: <https://database.mmsp-kn.de/kadid-10k-database.html>
+
 ---
 
 ## Training
