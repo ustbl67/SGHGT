@@ -39,8 +39,5 @@ DeepgazeIIE: <https://github.com/matthias-k/DeepGaze>
 run train.py
 ```
 
-## Evaluate
-```text
-run evaluate.py
-```
+
 
