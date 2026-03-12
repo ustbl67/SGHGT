@@ -1,4 +1,4 @@
-# SGHGT: A Saliency-Guided Hierarchical Gated Transformer for No-Reference Image Quality Assessment
+# Hierarchical Gated Transformer with Visual Saliency for No-Reference Image Quality Assessment
 This is the official implementation of the paper: **"Hierarchical Gated Transformer with Visual Saliency for No-Reference Image Quality Assessment"**.
 --
 ## Introduction
