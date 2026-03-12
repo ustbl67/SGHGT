@@ -73,25 +73,6 @@ class DatasetConfig:
                 'IMG_SIZE': 384,
                 'LAMBDA_MSE': 1.0,
                 'LAMBDA_RANK': 1.0
-            },
-            'KONIQ': {
-                'BASE_DIR': r"C:\Users\Administrator\Desktop\IQA DATA\koniq",
-                'IMAGES_DIR': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\koniq", "koniq10k"),
-                'MOS_FILE_PATH': os.path.join(r"C:\Users\Administrator\Desktop\IQA DATA\koniq", "image_mos_pairs.txt"),
-                'OUTPUT_DIR': "./koniq_results",
-                'parser': 'parse_koniq',
-                'split_method': 'random',
-                'model_type': 'HGR',
-                'training_stages': 'two_stage',
-                'N_EPOCHS': 50,
-                'LR_HEAD': 3e-4,
-                'LR_BACKBONE': 8e-6,
-                'BATCH_SIZE': 8,
-                'BASE_SIZE': 512,
-                'INPUT_SIZE': 384,
-                'IMG_SIZE': 384,
-                'LAMBDA_MSE': 1.0,
-                'LAMBDA_RANK': 1.0
             }
         }
 
@@ -126,18 +107,15 @@ class BaseIQADataset(Dataset):
 
     def __getitem__(self, idx):
         try:
-            # Load and resize image to base_size
             img = Image.open(self.paths[idx]).convert('RGB').resize((self.base_size, self.base_size), Image.BILINEAR)
             img_t = transforms.ToTensor()(img)
             
-            # Load saliency map from cache
             sal_path = self.sal_cache[self.paths[idx]]
             sal = torch.load(sal_path)
             if sal.ndim == 4: sal = sal.squeeze(0)
 
             crop_size = self.input_size
             if self.is_train:
-                # Random cropping and flipping for training
                 i, j, h, w = transforms.RandomCrop.get_params(img_t, (crop_size, crop_size))
                 img_out = T_F.crop(img_t, i, j, h, w)
                 sal_out = T_F.crop(sal, i, j, h, w)
@@ -145,15 +123,12 @@ class BaseIQADataset(Dataset):
                     img_out = T_F.hflip(img_out)
                     sal_out = T_F.hflip(sal_out)
             else:
-                # Center cropping for evaluation
                 img_out = T_F.center_crop(img_t, (crop_size, crop_size))
                 sal_out = T_F.center_crop(sal, (crop_size, crop_size))
 
-            # Image normalization
             norm = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
             return norm(img_out), sal_out, self.scores[idx]
         except Exception as e:
-            # Return zero tensors on failure
             return torch.zeros(3, self.input_size, self.input_size), torch.zeros(1, self.input_size, self.input_size), torch.tensor(0.0)
 
 # Dataset Subclasses
@@ -161,7 +136,6 @@ class CID2013Dataset(BaseIQADataset): pass
 class TID2013Dataset(BaseIQADataset): pass
 class CLIVEDataset(BaseIQADataset): pass
 class KADIDDataset(BaseIQADataset): pass
-class KONIQDataset(BaseIQADataset): pass
 
 class DatasetParser:
     """Helper to find files and parse MOS text files."""
@@ -234,18 +208,6 @@ class DatasetParser:
                         paths.append(img_path); scores.append(float(parts[2])); refs.append(parts[1])
         return paths, scores, refs
 
-    @staticmethod
-    def parse_koniq(config):
-        paths, scores = [], []
-        with open(config['MOS_FILE_PATH'], 'r') as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    img_path = os.path.join(config['IMAGES_DIR'], parts[0])
-                    if os.path.exists(img_path):
-                        paths.append(img_path); scores.append(float(parts[1]))
-        return paths, scores, None
-
 class DataSplitter:
     """Splits data based on folder, reference image, or random indexing."""
     @staticmethod
@@ -283,5 +245,5 @@ class DataSplitter:
                    [paths[i] for i in ts_i], [scores[i] for i in ts_i]
 
 def get_dataset_class(name):
-    cls_map = {'CID2013': CID2013Dataset, 'TID2013': TID2013Dataset, 'CLIVE': CLIVEDataset, 'KADID': KADIDDataset, 'KONIQ': KONIQDataset}
+    cls_map = {'CID2013': CID2013Dataset, 'TID2013': TID2013Dataset, 'CLIVE': CLIVEDataset, 'KADID': KADIDDataset}
     return cls_map.get(name, BaseIQADataset)
